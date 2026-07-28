@@ -1,43 +1,50 @@
-name: Deploy
-
-# This is a placeholder deploy workflow for testing the release-agent
-# webhook wiring. It does nothing real — just simulates a deploy succeeding
-# or failing, controlled by a manual input, so you can confirm Slack
-# receives the right status updates.
-#
-# Replace this with your actual deployment steps once you have them, or
-# remove it entirely if Copado (rather than GitHub Actions) handles your
-# real deploys — in that case, wire Copado's own webhook/notification
-# feature to POST to /webhooks/deploy-event instead of relying on this
-# workflow_run-based approach.
+name: Release Agent Events
 
 on:
-  workflow_dispatch:
-    inputs:
-      simulate_failure:
-        description: "Simulate a deploy failure instead of success"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  push:
+    tags:
+      - "v*"
+  workflow_run:
+    workflows: ["Deploy"]
+    types: [requested, completed]
 
 jobs:
-  deploy:
+  notify-tag:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Simulate deploy work
+      - name: Notify release agent of new tag
         run: |
-          echo "Pretending to deploy..."
-          sleep 5
+          BODY='{"event_type":"tag_created","tag":"${{ github.ref_name }}"}'
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"
 
-      - name: Fail on purpose if requested
-        if: ${{ github.event.inputs.simulate_failure == 'true' }}
+  notify-deploy-status:
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine event type
+        id: event
         run: |
-          echo "Simulating a deploy failure for testing."
-          exit 1
+          if [ "${{ github.event.workflow_run.status }}" = "requested" ]; then
+            echo "type=deploy_started" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.workflow_run.conclusion }}" = "success" ]; then
+            echo "type=deploy_succeeded" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=deploy_failed" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Succeed
-        if: ${{ github.event.inputs.simulate_failure != 'true' }}
-        run: echo "Deploy simulated successfully."
+      - name: Notify release agent of deploy status
+        run: |
+          BODY=$(cat <<EOF
+          {"event_type":"${{ steps.event.outputs.type }}","tag":"${{ github.event.workflow_run.head_branch }}","detail":"${{ github.event.workflow_run.html_url }}"}
+          EOF
+          )
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"

@@ -1,0 +1,43 @@
+name: Deploy
+
+# This is a placeholder deploy workflow for testing the release-agent
+# webhook wiring. It does nothing real — just simulates a deploy succeeding
+# or failing, controlled by a manual input, so you can confirm Slack
+# receives the right status updates.
+#
+# Replace this with your actual deployment steps once you have them, or
+# remove it entirely if Copado (rather than GitHub Actions) handles your
+# real deploys — in that case, wire Copado's own webhook/notification
+# feature to POST to /webhooks/deploy-event instead of relying on this
+# workflow_run-based approach.
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: "Simulate a deploy failure instead of success"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate deploy work
+        run: |
+          echo "Pretending to deploy..."
+          sleep 5
+
+      - name: Fail on purpose if requested
+        if: ${{ github.event.inputs.simulate_failure == 'true' }}
+        run: |
+          echo "Simulating a deploy failure for testing."
+          exit 1
+
+      - name: Succeed
+        if: ${{ github.event.inputs.simulate_failure != 'true' }}
+        run: echo "Deploy simulated successfully."

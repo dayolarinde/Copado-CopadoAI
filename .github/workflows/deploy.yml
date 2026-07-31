@@ -1,32 +1,86 @@
 name: Deploy
 
+# Fires automatically when a pull request merges into SIT, UAT, or PROD --
+# no manual run needed. This is the POC version: there's no real
+# Salesforce environment connected to SIT/UAT yet, so the "deploy" itself
+# is still simulated. What's real is the trigger and the notifications to
+# the release agent, so the whole Slack-facing flow can be tested
+# end-to-end before any real environment is wired up.
+#
+# Requires repo secrets: RELEASE_AGENT_URL, RELEASE_AGENT_WEBHOOK_SECRET
+# Requires branches literally named SIT, UAT, and PROD to exist in this repo.
+#
+# How release identity is derived: this assumes promotion into an
+# environment branch always happens via a merged pull request (not a
+# direct push). The PR's head.ref (branch merged FROM) is treated as the
+# release branch -- e.g. merging "Release-Aug-2026" into "SIT" tells this
+# workflow the release branch is "Release-Aug-2026" and the environment is
+# "SIT", entirely from the PR's own metadata, no manual input needed. If
+# your real process ever does a direct push to an environment branch
+# instead of a PR merge, this trigger won't fire -- ask for a variant if
+# that's a real possibility.
+#
+# To simulate a deploy failure: add a "simulate-failure" label to the PR
+# before merging it. No label = simulated success.
+
 on:
-  workflow_dispatch:
-    inputs:
-      simulate_failure:
-        description: "Simulate a deploy failure instead of success"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  pull_request:
+    types: [closed]
+    branches:
+      - SIT
+      - UAT
+      - PROD
 
 jobs:
   deploy:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Simulate deploy work
+      - name: Notify release agent - deploy started
         run: |
-          echo "Pretending to deploy..."
+          BODY=$(cat <<EOF
+          {"event_type":"deploy_started","branch":"${{ github.event.pull_request.head.ref }}","environment":"${{ github.event.pull_request.base.ref }}"}
+          EOF
+          )
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"
+
+      - name: Simulate deploy work (no Salesforce environment connected yet for POC)
+        run: |
+          echo "Pretending to deploy release '${{ github.event.pull_request.head.ref }}' to ${{ github.event.pull_request.base.ref }}..."
           sleep 5
 
-      - name: Fail on purpose if requested
-        if: ${{ github.event.inputs.simulate_failure == 'true' }}
+      - name: Fail on purpose if the PR has a 'simulate-failure' label
+        if: contains(github.event.pull_request.labels.*.name, 'simulate-failure')
         run: |
-          echo "Simulating a deploy failure for testing."
+          echo "Simulating a deploy failure for testing (triggered by the 'simulate-failure' label)."
           exit 1
 
-      - name: Succeed
-        if: ${{ github.event.inputs.simulate_failure != 'true' }}
-        run: echo "Deploy simulated successfully."
+      - name: Notify release agent - deploy succeeded
+        if: ${{ success() }}
+        run: |
+          BODY=$(cat <<EOF
+          {"event_type":"deploy_succeeded","branch":"${{ github.event.pull_request.head.ref }}","environment":"${{ github.event.pull_request.base.ref }}"}
+          EOF
+          )
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"
+
+      - name: Notify release agent - deploy failed
+        if: ${{ failure() }}
+        run: |
+          BODY=$(cat <<EOF
+          {"event_type":"deploy_failed","branch":"${{ github.event.pull_request.head.ref }}","environment":"${{ github.event.pull_request.base.ref }}","detail":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}
+          EOF
+          )
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"

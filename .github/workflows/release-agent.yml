@@ -1,0 +1,97 @@
+name: Release Agent
+
+# Fires whenever a PR merges into one of the pipeline stage branches.
+# Mirrors the real Genesysdev -> SIT -> PreProd -> Prod pipeline.
+#
+# This is the "no server" version of the release agent. Compare it against
+# the chat artifact (a dashboard you fill in by hand) and against a full
+# Node/Express + Postgres backend: this version has zero infrastructure to
+# host or pay for. GitHub Actions is the only compute, and a single git tag
+# per branch is the only state. The tradeoff for that simplicity: it can
+# only ever react to what's already true in GitHub (a PR merged) -- it
+# can't hold a multi-step approval checklist the way a real backend can,
+# because there's no always-on process to click a button against between
+# runs.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   SLACK_WEBHOOK_URL     - a Slack Incoming Webhook URL for your release channel
+#   COPILOT_GITHUB_TOKEN  - a fine-grained GitHub PAT with the account-level
+#                           "Copilot Requests" permission, on an account with
+#                           an active Copilot subscription. Uses Copilot
+#                           instead of a separate AI API specifically to
+#                           avoid needing separate approval for a new API
+#                           if your org has already approved Copilot.
+#                           IMPORTANT: this must be a different token from
+#                           GITHUB_TOKEN below -- a token scoped only for
+#                           Copilot Requests has no repo access, and vice
+#                           versa. Mixing them up is the single most common
+#                           setup mistake (see the backend version's setup
+#                           doc for the full explanation).
+# GITHUB_TOKEN is provided automatically by Actions; the "contents: write"
+# permission below is what lets this workflow move its own marker tag.
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - Genesysdev
+      - SIT
+      - PreProd
+      - Prod
+
+jobs:
+  release-notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout (full history, needed to read the marker tag)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies (Copilot SDK)
+        # Scoped to its own package.json under .github/scripts so this
+        # doesn't touch or conflict with the real project's own
+        # package.json / dependency tree.
+        run: npm install --prefix .github/scripts
+
+      - name: Draft changelog and post Slack update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        # No --prefix needed here: Node's own module resolution walks up
+        # from the script's directory, so it finds .github/scripts/node_modules
+        # (created by the npm install step above) automatically.
+        run: node .github/scripts/release-notify.js
+
+      - name: Move this branch's marker tag to the current commit
+        # This tag is the *entire* state this system keeps: "the last commit
+        # we already reported on, for this branch." Force-moving it (rather
+        # than creating a new tag each time) keeps exactly one marker per
+        # branch instead of accumulating tags forever.
+        #
+        # Known limitation: if two PRs merge into the same branch within
+        # seconds of each other, both runs could read the marker before
+        # either has moved it, and both would report the same PR list. For
+        # a low-frequency release branch this is unlikely; for a
+        # high-traffic branch, a real backend with a database (see the
+        # Postgres-backed version) removes this race entirely.
+        run: |
+          TAG="release-agent-marker-${{ github.event.pull_request.base.ref }}"
+          git tag -f "$TAG" "${{ github.sha }}"
+          git push -f origin "$TAG"

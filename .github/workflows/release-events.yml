@@ -1,0 +1,50 @@
+name: Release Agent Events
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_run:
+    workflows: ["Deploy"]
+    types: [requested, completed]
+
+jobs:
+  notify-tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify release agent of new tag
+        run: |
+          BODY='{"event_type":"tag_created","tag":"${{ github.ref_name }}"}'
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"
+
+  notify-deploy-status:
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine event type
+        id: event
+        run: |
+          if [ "${{ github.event.workflow_run.status }}" = "requested" ]; then
+            echo "type=deploy_started" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.workflow_run.conclusion }}" = "success" ]; then
+            echo "type=deploy_succeeded" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=deploy_failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify release agent of deploy status
+        run: |
+          BODY=$(cat <<EOF
+          {"event_type":"${{ steps.event.outputs.type }}","tag":"${{ github.event.workflow_run.head_branch }}","detail":"${{ github.event.workflow_run.html_url }}"}
+          EOF
+          )
+          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.RELEASE_AGENT_WEBHOOK_SECRET }}" | sed 's/^.* //')
+          curl -sf -X POST "${{ secrets.RELEASE_AGENT_URL }}/webhooks/deploy-event" \
+            -H "Content-Type: application/json" \
+            -H "x-release-agent-signature: $SIG" \
+            -d "$BODY"

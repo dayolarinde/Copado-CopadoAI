@@ -1,0 +1,6 @@
+{
+  "_comment": "Maps GitHub usernames (lowercase, as they appear in PR author fields) to Slack member IDs, so the release notifier can @-mention the right person in Slack. A GitHub username not listed here just gets shown as plain text instead of a broken mention -- missing entries never break the notification.",
+  "_how_to_find_a_slack_id": "In Slack, click the person's name/avatar -> the '...' (more) menu on their profile card -> 'Copy member ID'. It looks like U01ABCDEF2.",
+
+  "jsmith": "U01ABCDEF2"
+}

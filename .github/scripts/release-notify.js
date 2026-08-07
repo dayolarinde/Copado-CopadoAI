@@ -7,6 +7,8 @@
 // package.json alongside this file) instead of zero.
 
 const { CopilotClient, approveAll } = require("@github/copilot-sdk");
+const fs = require("fs");
+const path = require("path");
 
 const {
   GITHUB_TOKEN,
@@ -65,6 +67,36 @@ async function getMergedPRsSince(sinceDate) {
     if (!sinceDate) return true;
     return new Date(pr.merged_at) > new Date(sinceDate);
   });
+}
+
+/**
+ * Loads the GitHub-username -> Slack-member-ID mapping. Missing file or
+ * bad JSON degrades to an empty mapping rather than failing the run --
+ * same "config is optional, never breaks the core flow" pattern used for
+ * approvers.yaml in the Postgres-backed version.
+ */
+function loadSlackUserMap() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, "slack-users.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    delete parsed._comment;
+    delete parsed._how_to_find_a_slack_id;
+    return parsed;
+  } catch (err) {
+    console.warn("No slack-users.json mapping found (or it's invalid) -- PR authors will show as plain GitHub usernames instead of @-mentions.");
+    return {};
+  }
+}
+
+/**
+ * Turns a GitHub login into a Slack mention if we have a mapping for it,
+ * or a plain, non-broken fallback if we don't. Building this deterministically
+ * in code (rather than asking the AI to draft mention syntax into free text)
+ * guarantees the mention actually works every time it's mapped.
+ */
+function formatMention(githubLogin, slackUserMap) {
+  const slackId = slackUserMap[githubLogin.toLowerCase()];
+  return slackId ? `<@${slackId}>` : `@${githubLogin} _(no Slack mapping yet)_`;
 }
 
 /**
@@ -172,9 +204,21 @@ async function postSlack(text) {
   const sinceDate = await getMarkerDate();
   const prs = await getMergedPRsSince(sinceDate);
   const changelog = await draftChangelog(prs);
+  const slackUserMap = loadSlackUserMap();
 
   const header = `:rocket: *${BASE_BRANCH}* received a merge from \`${HEAD_BRANCH}\` — PR #${PR_NUMBER} by ${PR_AUTHOR}: "${PR_TITLE}"`;
-  await postSlack(`${header}\n\n${changelog}`);
+
+  // Built directly, not by the AI -- see formatMention() for why. One line
+  // per PR so each author can immediately spot their own ticket, even
+  // when several PRs landed in the same batch.
+  const trackingLines = prs.map(
+    (pr) => `• #${pr.number} "${pr.title}" — ${formatMention(pr.user.login, slackUserMap)}`
+  );
+  const trackingBlock = trackingLines.length
+    ? `\n\n*Tracking:*\n${trackingLines.join("\n")}`
+    : "";
+
+  await postSlack(`${header}\n\n${changelog}${trackingBlock}`);
 
   console.log(`Posted update to Slack for ${BASE_BRANCH} (${prs.length} PR(s) included).`);
 })().catch((err) => {

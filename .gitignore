@@ -10,4 +10,4 @@ triggers/copado__*
 pages/copado__*
 
 permissionsets/copado__*
-.release-agent/scripts/node_modules/
+.release-agent/scripts/node_modules/.release-agent/scripts/node_modules/

@@ -1,0 +1,51 @@
+name: Release - Rollback
+
+# Records a rollback for a release. Running this workflow IS the
+# confirmation -- there's no separate "Confirm" button to click without a
+# bot server, so choosing to run it is the deliberate act. This only
+# updates release-agent's own tracked status; it does not trigger any
+# actual rollback of your deployed code -- do that separately through
+# whatever your real rollback process is.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Release branch name"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Record rollback
+        working-directory: .release-agent/scripts
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node rollback.js "${{ inputs.branch }}" "${{ github.actor }}"
+
+      - name: Commit release state
+        run: |
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/
+          git diff --staged --quiet || git commit -m "Rollback recorded: ${{ inputs.branch }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push

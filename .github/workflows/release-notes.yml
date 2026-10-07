@@ -1,0 +1,51 @@
+name: Release - Notes
+
+# Regenerates release notes from whatever's currently merged into the
+# branch, updates the tracked state, and commits a Word doc copy into the
+# repo under .release-agent/release-notes/. Replaces "/release notes".
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Release branch name"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Refresh release notes
+        working-directory: .release-agent/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node release-notes.js "${{ inputs.branch }}"
+
+      - name: Commit release notes
+        run: |
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/ .release-agent/release-notes/
+          git diff --staged --quiet || git commit -m "Refresh release notes: ${{ inputs.branch }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push

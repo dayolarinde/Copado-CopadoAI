@@ -1,0 +1,39 @@
+name: Release - Status
+
+# Posts a release's status (checklist, stages, last merge, merged PRs) to
+# Slack. Leave branch empty to list every release currently active. This
+# is read-only -- no state changes, no commit needed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Release branch name (leave empty to list all active releases)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Post status
+        working-directory: .release-agent/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node release-status.js "${{ inputs.branch }}"

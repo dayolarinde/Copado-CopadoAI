@@ -1,0 +1,12 @@
+{
+  "name": "release-agent-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-hosting release agent: runs entirely inside GitHub Actions, no server or database required",
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.8",
+    "@octokit/rest": "^20.1.1",
+    "docx": "^9.7.1",
+    "js-yaml": "^4.1.0"
+  }
+}

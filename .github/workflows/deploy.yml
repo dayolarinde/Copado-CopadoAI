@@ -1,32 +1,110 @@
 name: Deploy
 
+# Fires automatically when a pull request merges into SIT, UAT, or PROD --
+# no manual run needed. This is the POC version: there's no real
+# Salesforce environment connected to SIT/UAT yet, so the "deploy" itself
+# is still simulated. What's real is the trigger and the state/notification
+# updates, so the whole flow can be tested before any real environment is
+# wired up.
+#
+# Requires repo secrets: COPILOT_GITHUB_TOKEN, SLACK_WEBHOOK_URL
+# Requires branches literally named SIT, UAT, and PROD to exist.
+#
+# How release identity is derived: this assumes promotion into an
+# environment branch always happens via a merged pull request (not a
+# direct push). The PR's head.ref (branch merged FROM) is the release
+# branch; the PR's base.ref (branch merged INTO) is the environment. If
+# your real process ever does a direct push to an environment branch
+# instead of a PR merge, this trigger won't fire.
+#
+# To simulate a deploy failure: add a "simulate-failure" label to the PR
+# before merging it. No label = simulated success.
+#
+# Note: this workflow commits to the default branch mid-job (once after
+# "deploy started", again after the deploy finishes). If your default
+# branch has protection rules blocking direct pushes (even from Actions),
+# these commit steps will fail -- either allow the github-actions bot to
+# bypass protection for this specific case, or ask your repo admin how
+# they'd like this handled.
+
 on:
-  workflow_dispatch:
-    inputs:
-      simulate_failure:
-        description: "Simulate a deploy failure instead of success"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  pull_request:
+    types: [closed]
+    branches:
+      - SIT
+      - UAT
+      - PROD
+
+permissions:
+  contents: write
 
 jobs:
   deploy:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Simulate deploy work
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Notify deploy started
+        working-directory: .release-agent/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node deploy-event.js deploy_started "${{ github.event.pull_request.head.ref }}" "${{ github.event.pull_request.base.ref }}"
+
+      - name: Commit state (deploy started)
         run: |
-          echo "Pretending to deploy..."
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/
+          git diff --staged --quiet || git commit -m "Deploy started: ${{ github.event.pull_request.base.ref }} for ${{ github.event.pull_request.head.ref }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push
+
+      - name: Simulate deploy work (no Salesforce environment connected yet for POC)
+        run: |
+          echo "Pretending to deploy '${{ github.event.pull_request.head.ref }}' to ${{ github.event.pull_request.base.ref }}..."
           sleep 5
 
-      - name: Fail on purpose if requested
-        if: ${{ github.event.inputs.simulate_failure == 'true' }}
+      - name: Fail on purpose if the PR has a 'simulate-failure' label
+        if: contains(github.event.pull_request.labels.*.name, 'simulate-failure')
         run: |
-          echo "Simulating a deploy failure for testing."
+          echo "Simulating a deploy failure for testing (triggered by the 'simulate-failure' label)."
           exit 1
 
-      - name: Succeed
-        if: ${{ github.event.inputs.simulate_failure != 'true' }}
-        run: echo "Deploy simulated successfully."
+      - name: Notify deploy succeeded
+        if: ${{ success() }}
+        working-directory: .release-agent/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node deploy-event.js deploy_succeeded "${{ github.event.pull_request.head.ref }}" "${{ github.event.pull_request.base.ref }}"
+
+      - name: Notify deploy failed
+        if: ${{ failure() }}
+        working-directory: .release-agent/scripts
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node deploy-event.js deploy_failed "${{ github.event.pull_request.head.ref }}" "${{ github.event.pull_request.base.ref }}" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Commit state (deploy finished)
+        if: always()
+        run: |
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/
+          git diff --staged --quiet || git commit -m "Deploy finished: ${{ github.event.pull_request.base.ref }} for ${{ github.event.pull_request.head.ref }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push

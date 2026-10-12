@@ -1,7 +1,12 @@
 const { Octokit } = require("@octokit/rest");
 
 function getOctokit() {
-  return new Octokit({ auth: process.env.GITHUB_TOKEN });
+  // GITHUB_API_URL is set by Actions on every run (https://api.github.com on
+  // github.com, or your enterprise host on GHES). Falls back to Octokit's
+  // default when it's absent, e.g. when running locally.
+  const options = { auth: process.env.GITHUB_TOKEN };
+  if (process.env.GITHUB_API_URL) options.baseUrl = process.env.GITHUB_API_URL;
+  return new Octokit(options);
 }
 
 function ownerRepo() {
@@ -55,4 +60,4 @@ async function branchExists(branch) {
   }
 }
 
-module.exports = { getMergedPRsForBranch, branchExists, ownerRepo };
+module.exports = { getMergedPRsForBranch, branchExists, ownerRepo, getOctokit };

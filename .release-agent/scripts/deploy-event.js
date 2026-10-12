@@ -1,8 +1,41 @@
-const { loadState, saveState } = require("./lib/state");
+const fs = require("fs");
+const { loadState, saveState, isActive } = require("./lib/state");
 const { loadApproversConfig } = require("./lib/config");
 const { getMergedPRsForBranch } = require("./lib/github");
 const { summarizeFailure } = require("./lib/ai");
 const { postToSlack } = require("./lib/slack");
+const { upsertGithubRelease } = require("./lib/github-release");
+
+// Keeps the GitHub release page's status block current. Only applies once the
+// release has been published (Release - Publish), and never blocks the deploy
+// notification if GitHub hiccups.
+async function refreshGithubRelease(state) {
+  if (!state.github_release_id) return;
+  try {
+    await upsertGithubRelease(state);
+  } catch (err) {
+    console.error("GitHub release refresh failed (non-fatal):", err);
+  }
+}
+
+/**
+ * Tells the workflow to skip every remaining step. A refused deploy must not
+ * fall through to the "deploy failed" step, which would mark the stage failed
+ * and post a misleading failure summary.
+ */
+function markBlocked() {
+  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, "blocked=true\n");
+}
+
+async function refuse(message) {
+  console.error(message);
+  markBlocked();
+  try {
+    await postToSlack(`:no_entry: ${message}`);
+  } catch (err) {
+    console.error("Couldn't post the refusal to Slack:", err);
+  }
+}
 
 function checkStageOrder(state, environment) {
   const idx = state.stages.findIndex((s) => s.environment === environment);
@@ -40,8 +73,33 @@ async function main() {
   }
 
   const state = loadState(branch);
+
+  // Problems found when a deploy *starts* are reported and the workflow's
+  // remaining steps are skipped. Nothing is recorded as failed, because nothing
+  // was attempted. Note the merge itself already happened in GitHub; this can
+  // only flag it.
+  if (eventType === "deploy_started") {
+    if (!state) {
+      await refuse(`A PR from \`${branch}\` merged into *${environment}*, but there's no release for that branch. Run Release - Cut first. Nothing was tracked.`);
+      return;
+    }
+    if (!isActive(state)) {
+      await refuse(`A PR from \`${branch}\` merged into *${environment}*, but that release is already ${state.status}. Nothing was tracked.`);
+      return;
+    }
+    if (!state.stages.some((s) => s.environment === environment)) {
+      await refuse(`*${environment}* isn't a configured stage for \`${branch}\`. Check environments.yaml. Nothing was tracked.`);
+      return;
+    }
+    const blocker = checkStageOrder(state, environment);
+    if (blocker) {
+      await refuse(`${blocker} The merge into *${environment}* already happened in GitHub for \`${branch}\`, so this needs a person to look at it. Nothing was tracked.`);
+      return;
+    }
+  }
+
   if (!state) {
-    console.error(`No active release found for branch "${branch}".`);
+    console.error(`No release found for branch "${branch}".`);
     process.exit(1);
   }
 
@@ -52,16 +110,12 @@ async function main() {
   }
 
   if (eventType === "deploy_started") {
-    const blocker = checkStageOrder(state, environment);
-    if (blocker) {
-      console.error(blocker);
-      process.exit(1);
-    }
 
     stage.status = "deploying";
     stage.started_at = new Date().toISOString();
     updateOverallStatus(state, environment, "deploying");
     saveState(branch, state);
+    await refreshGithubRelease(state);
 
     let prCountText = "";
     try {
@@ -81,6 +135,7 @@ async function main() {
     stage.completed_at = new Date().toISOString();
     updateOverallStatus(state, environment, "deployed");
     saveState(branch, state);
+    await refreshGithubRelease(state);
 
     const isFullyDone = state.status === "deployed";
     await postToSlack(
@@ -93,6 +148,7 @@ async function main() {
     stage.completed_at = new Date().toISOString();
     updateOverallStatus(state, environment, "failed");
     saveState(branch, state);
+    await refreshGithubRelease(state);
 
     let summary = "No details provided.";
     if (detail) {

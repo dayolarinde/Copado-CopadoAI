@@ -1,0 +1,53 @@
+name: Release - Checklist
+
+# Marks one checklist item done for a release. Replaces clicking a
+# "Mark done" button in Slack -- since there's no bot to render clickable
+# buttons without a server, checking off an item means running this
+# workflow with the item's ID instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Release branch name"
+        required: true
+        type: string
+      item_id:
+        description: "Checklist item ID (see config/checklist.yaml for valid IDs, e.g. qa_signoff)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  mark-done:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Mark checklist item done
+        working-directory: .release-agent/scripts
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node mark-checklist-item.js "${{ inputs.branch }}" "${{ inputs.item_id }}" "${{ github.actor }}"
+
+      - name: Commit release state
+        run: |
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/
+          git diff --staged --quiet || git commit -m "Checklist: ${{ inputs.item_id }} done for ${{ inputs.branch }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push

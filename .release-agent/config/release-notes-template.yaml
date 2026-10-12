@@ -1,0 +1,13 @@
+title: "Release Notes"
+
+sections:
+  - name: "Feature"
+    description: "Brand new capability that didn't exist before"
+  - name: "Bug"
+    description: "A defect or incorrect behavior that's been fixed"
+  - name: "Enhancement"
+    description: "An improvement to something that already existed (not a new capability, not a bug fix)"
+  - name: "Technical Debt"
+    description: "Internal cleanup, refactors, dependency updates, or tooling changes -- not user-facing"
+
+footer: "Generated automatically from merged pull requests."

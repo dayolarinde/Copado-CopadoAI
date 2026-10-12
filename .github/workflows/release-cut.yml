@@ -1,0 +1,51 @@
+name: Release - Cut
+
+# Manually run this to start a new release. Replaces the old "/release
+# cut" Slack command -- there's no bot listening for commands in this
+# zero-hosting architecture, so starting a release is a deliberate action
+# you take here on GitHub instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Release branch name (whatever you're calling this release, e.g. Release-Aug-2026)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install script dependencies
+        working-directory: .release-agent/scripts
+        run: npm install
+
+      - name: Cut release
+        working-directory: .release-agent/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node cut-release.js "${{ inputs.branch }}"
+
+      - name: Commit release state
+        run: |
+          git config user.name "release-agent"
+          git config user.email "release-agent@users.noreply.github.com"
+          git add .release-agent/releases/
+          git diff --staged --quiet || git commit -m "Cut release: ${{ inputs.branch }}"
+          git pull --rebase origin ${{ github.event.repository.default_branch }}
+          git push
